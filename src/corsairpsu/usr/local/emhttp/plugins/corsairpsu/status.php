@@ -92,7 +92,6 @@ if ($settings["TYPE"] == "corsairmi") {
                 'input_current'  => round(floatval($inp['iin_a']), 2),
                 'input_power'    => round(floatval($inp['pin_w'])),
                 'efficiency'     => round(floatval($ax['efficiency_pct']), 1),
-                'channels_12v'   => $ax['channels_12v'],
         ];
 
         header('Content-Type: application/json');

@@ -86,7 +86,6 @@ $mytiles[$pluginname]['column2'] =
             <span class="w26"><span class="corsair-efficiency"></span>%</span>
             <span class="w26"><span class="corsair-input_voltage"></span>V (<span class="corsair-input_power"></span>W)</span>
             </td></tr>
-        <tr><td id="corsair-channels-anchor"></td></tr>
 </tbody>
 EOT;
 ?>
@@ -106,23 +105,6 @@ const corsairpsu_status = () => {
              $(".corsair-fan_display").html(data['fan_percentage'] + "% (" + data['fan_rpm'] + " RPM)");
          }
 
-         // Per-connector 12V channel rows (ax1600i only)
-         $('.corsair-channel-row').remove();
-         if (data['channels_12v']) {
-             const active = data['channels_12v'].filter(c => c.iout_a > 0.01);
-             if (active.length) {
-                 let html = '<hr style="margin:4px 0;border-color:#555">';
-                 html += '<span class="w26 dash_corsairpsu_table_header">12V Connector</span>' +
-                         '<span class="w26 dash_corsairpsu_table_header">Current</span>' +
-                         '<span class="w26 dash_corsairpsu_table_header">Power</span><br>';
-                 active.forEach(c => {
-                     html += '<span class="w26">' + c.label + '</span>' +
-                             '<span class="w26">' + c.iout_a.toFixed(2) + 'A</span>' +
-                             '<span class="w26">' + c.pout_w.toFixed(1) + 'W</span><br>';
-                 });
-                 $('#corsair-channels-anchor').html(html);
-             }
-         }
         }
     });
 };

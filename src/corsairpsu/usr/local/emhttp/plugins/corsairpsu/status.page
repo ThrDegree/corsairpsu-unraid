@@ -81,7 +81,6 @@ Patch by bngoold for the Unraid community
             <td><span class="corsair-input_voltage"></span>V (<span class="corsair-input_power"></span>W<span class="corsair-input_amps"></span>)</td>
             <td></td>
         </tr>
-        <tr id="corsair-channels-anchor"></tr>
     </tbody>
 </table>
 <script>
@@ -113,27 +112,6 @@ const corsairpsu_status = () => {
              $(".corsair-fan_display").html(data['fan_percentage'] + "% (" + data['fan_rpm'] + " RPM)");
          }
 
-         // Per-connector 12V channel rows (ax1600i only)
-         $('.corsair-channel-row').remove();
-         if (data['channels_12v']) {
-             const active = data['channels_12v'].filter(c => c.iout_a > 0.01);
-             if (active.length) {
-                 let html = '<tr class="corsair-channel-row"><td></td><td colspan="3"><hr style="margin:4px 0;border-color:#555"></td><td></td></tr>';
-                 html += '<tr class="corsair-channel-row"><td></td>' +
-                         '<td class="dash_corsairpsu_table_header">12V Connector</td>' +
-                         '<td class="dash_corsairpsu_table_header">Current</td>' +
-                         '<td class="dash_corsairpsu_table_header">Power</td>' +
-                         '<td></td></tr>';
-                 active.forEach(c => {
-                     html += '<tr class="corsair-channel-row"><td></td>' +
-                             '<td>' + c.label + '</td>' +
-                             '<td>' + c.iout_a.toFixed(2) + 'A</td>' +
-                             '<td>' + c.pout_w.toFixed(1) + 'W</td>' +
-                             '<td></td></tr>';
-                 });
-                 $('#corsair-channels-anchor').after(html);
-             }
-         }
         }
     });
 };
