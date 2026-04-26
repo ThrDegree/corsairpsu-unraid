@@ -208,7 +208,13 @@ class AX1600i:
         self.set_main_page(0)
         vin  = self._read_float(REG_VIN)
         iin  = self._read_float(REG_IIN)
-        pin  = self._read_float(REG_PIN)  # measured input power from PSU
+        # The device only updates PIN (0xee) correctly after VOUT, IOUT, and PCAL
+        # have been read on page 0 — confirmed by --diag showing VOUT→IOUT→PCAL→PIN
+        # gives 200W (matching UPS), while skipping PCAL gives wrong values.
+        self._read_float(REG_VOUT)
+        self._read_float(REG_IOUT)
+        self._read_float(REG_POWER_CAL)
+        pin  = self._read_float(REG_PIN)
         temp = self._read_float(REG_TEMP)
         fan  = self._read_float(REG_FAN_SPEED)
         fan_pct  = self._read_byte(REG_FAN_PCT)
@@ -231,7 +237,8 @@ class AX1600i:
             iout = self._read_float(REG_IOUT)
             if page in (1, 2):
                 pwr_reg = self._read_float(REG_POWER_CAL)
-                pout = (pwr_reg + vout * iout) / 2.0
+                # PCAL returns 0 on some rails (e.g. +3.3V on AX1600i); fall back to V*I
+                pout = (pwr_reg + vout * iout) / 2.0 if pwr_reg > 0 else vout * iout
             else:
                 pout = vout * iout
             rails.append({
@@ -276,7 +283,7 @@ class AX1600i:
         channels = self.read_12v_channels()
         pout_total = sum(r['pout_w'] for r in rails)
         pin = inp['pin_w'] or 1.0
-        efficiency = min((pout_total / pin) * 100.0, 99.0)
+        efficiency = round((pout_total / pin) * 100.0, 1)
         return {
             'psu_model':      self.psu_name,
             'input':          inp,
@@ -285,6 +292,40 @@ class AX1600i:
             'rails':          rails,
             'channels_12v':   channels,
         }
+
+
+def linear11_steps(data: bytes) -> tuple:
+    """Return (p1, p2, value) showing decode steps for diagnostics."""
+    p1 = (data[1] >> 3) & 31
+    if p1 > 15:
+        p1 -= 32
+    p2 = ((data[1] & 7) * 256) + data[0]
+    if p2 > 1024:
+        p2 = -(65536 - (p2 | 63488))
+    return p1, p2, float(p2) * (2.0 ** p1)
+
+
+def run_diag(psu: 'AX1600i'):
+    print(f"\n=== AX1600i Diagnostic ({psu.psu_name}) ===\n")
+
+    regs = [
+        (REG_VOUT,      '0x8b', 'VOUT'),
+        (REG_IOUT,      '0x8c', 'IOUT'),
+        (REG_POWER_CAL, '0x96', 'PCAL'),
+        (REG_PIN,       '0xee', 'PIN '),
+    ]
+
+    for page, name in RAIL_PAGES:
+        psu.set_main_page(page)
+        print(f"Page {page} ({name}):")
+        for reg, addr, label in regs:
+            raw = psu._read_register(reg, 2)
+            if len(raw) >= 2:
+                p1, p2, val = linear11_steps(raw)
+                print(f"  {label} ({addr}): {raw.hex()}  p1={p1:+d}  p2={p2:6}  → {val:.4f}")
+            else:
+                print(f"  {label} ({addr}): short read ({raw.hex()})")
+        print()
 
 
 def print_summary(data: dict):
@@ -407,15 +448,18 @@ def main():
         run_daemon(interval=interval, output_file=output_file)
         return
 
+    diag_mode = '--diag' in args
+
     print("Connecting to AX1600i...", file=sys.stderr)
     psu = AX1600i()
     try:
         psu.setup()
-        data = psu.read_all()
-        if as_json:
-            print(json.dumps(data, indent=2))
+        if diag_mode:
+            run_diag(psu)
+        elif as_json:
+            print(json.dumps(psu.read_all(), indent=2))
         else:
-            print_summary(data)
+            print_summary(psu.read_all())
     finally:
         psu.close()
 
