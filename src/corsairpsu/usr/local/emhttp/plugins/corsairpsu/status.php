@@ -1,11 +1,12 @@
 <?php
 /**
  * Corsair PSU Statistics - AX1600i Support Patch
- * 
+ *
  * Original plugin by giganode
  * AX1600i driver by Jon0 (https://github.com/Jon0/ax1600i)
  * Patch by bngoold for the Unraid community
- * 
+ * AX1600i Python monitor by tylerburns (replaces Jon0 binary; adds per-channel 12V data)
+ *
  * Adds AX1600i PSU support with rail monitoring, temperature tracking,
  * fan percentage display, and efficiency calculation.
  */
@@ -22,130 +23,75 @@ if ($settings["TYPE"] == "corsairmi") {
         $stdout = shell_exec('/usr/local/bin/cpsumoncli ' . $settings["TTY"] . ' 2>&1');
         //$stdout = file_get_contents("https://raw.githubusercontent.com/CyanLabs/corsairpsu-unraid/master/axoutput-example.txt"); //- Debug Testing
 } elseif ($settings["TYPE"] == "ax1600i") {
-        $stdout = shell_exec('/usr/local/bin/ax1600i 2>/dev/null');
-        
-        // Graceful error handling if binary fails
-        if (!$stdout || trim($stdout) === '') {
+        $script = '/mnt/user/appdata/corsairPSU/ax1600i_monitor.py';
+        $raw = shell_exec('python3 ' . escapeshellarg($script) . ' --json 2>/dev/null');
+
+        if (!$raw || trim($raw) === '') {
                 header('Content-Type: application/json');
-                echo json_encode(['error' => 'no output from ax1600i', 'message' => 'Binary may be missing or PSU not connected']);
+                echo json_encode(['error' => 'no output from ax1600i_monitor.py', 'message' => 'Script may be missing, pyusb not installed, or PSU not connected']);
                 exit;
         }
-} else {
-        die("There is an error with your configuration!");
-}
 
-// Handle AX1600i parsing separately
-if ($settings["TYPE"] == "ax1600i") {
-        // Parse ax1600i output format
-        $lines = explode("\n", $stdout);
-        $ax_data = array();
-        
-        foreach ($lines as $line) {
-                if (preg_match('/Device name:\s*(.+)/', $line, $matches)) {
-                        $ax_data['product'] = trim($matches[1]);
-                } elseif (preg_match('/^Device firmware:\s*(.+)$/mi', $line, $matches)) {
-                        $ax_data['firmware'] = trim($matches[1]);
-                } elseif (preg_match('/^Version:\s*\[([^\]]+)\]/mi', $line, $matches)) {
-                        $ax_data['version'] = '[' . trim($matches[1]) . ']';
-                } elseif (preg_match('/Input:\s*voltage\s*=\s*([\d.]+)\s*v,\s*current\s*=\s*([\d.]+)\s*a,\s*power\s*=\s*([\d.]+)\s*w/i', $line, $matches)) {
-                        $ax_data['input_voltage'] = floatval($matches[1]);
-                        $ax_data['input_current'] = floatval($matches[2]);
-                        $ax_data['input_power'] = floatval($matches[3]);
-                } elseif (preg_match('/Rail 0:\s*voltage\s*=\s*([\d.]+)\s*v,\s*current\s*=\s*([\d.]+)\s*a,\s*power\s*=\s*([\d.]+)\s*w/i', $line, $matches)) {
-                        $ax_data['12v_voltage'] = floatval($matches[1]);
-                        $ax_data['12v_current'] = floatval($matches[2]);
-                        $ax_data['12v_watts'] = floatval($matches[3]);
-                } elseif (preg_match('/Rail 1:\s*voltage\s*=\s*([\d.]+)\s*v,\s*current\s*=\s*([\d.]+)\s*a,\s*power\s*=\s*([\d.]+)\s*w/i', $line, $matches)) {
-                        $ax_data['5v_voltage'] = floatval($matches[1]);
-                        $ax_data['5v_current'] = floatval($matches[2]);
-                        $ax_data['5v_watts'] = floatval($matches[3]);
-                } elseif (preg_match('/Rail 2:\s*voltage\s*=\s*([\d.]+)\s*v,\s*current\s*=\s*([\d.]+)\s*a,\s*power\s*=\s*([\d.]+)\s*w/i', $line, $matches)) {
-                        $ax_data['3v_voltage'] = floatval($matches[1]);
-                        $ax_data['3v_current'] = floatval($matches[2]);
-                        $ax_data['3v_watts'] = floatval($matches[3]);
-                } elseif (preg_match('/Temp 1\s*([\d.]+)\s*C/i', $line, $matches)) {
-                        $ax_data['temp1'] = floatval($matches[1]);
-                } elseif (preg_match('/Temp 2\s*([\d.]+)\s*C/i', $line, $matches)) {
-                        $ax_data['temp2'] = floatval($matches[1]);
-                } elseif (preg_match('/Fan speed\s*([\d.]+)\s*rpm/i', $line, $matches)) {
-                        $ax_data['fan_rpm'] = floatval($matches[1]);
-                }
+        $ax = json_decode($raw, true);
+        if (!$ax) {
+                header('Content-Type: application/json');
+                echo json_encode(['error' => 'failed to parse ax1600i_monitor.py output', 'raw' => substr($raw, 0, 500)]);
+                exit;
         }
-        
-        // Extract capacity from product name (e.g., "AX1600i" -> 1600)
-        $capacity = 1600; // Default for AX1600i
-        if (preg_match('/(\d{3,4})/', $ax_data['product'], $cap_match)) {
-                $capacity = intval($cap_match[1]);
+
+        $inp = $ax['input'];
+
+        // Index rails by name for easy lookup
+        $rails = [];
+        foreach ($ax['rails'] as $rail) {
+                $rails[$rail['name']] = $rail;
         }
-        
-        // Calculate total output power
-        $total_watts = $ax_data['12v_watts'] + $ax_data['5v_watts'] + $ax_data['3v_watts'];
-        
-        // Calculate efficiency (double clamp for outliers)
-        $efficiency = 0;
-        if ($ax_data['input_power'] > 1) {
-                $efficiency = ($total_watts / $ax_data['input_power']) * 100;
-                $efficiency = max(0, min(99.0, $efficiency));
-                // Additional cap at 97.5% for realistic display
-                if ($efficiency > 97.5) {
-                        $efficiency = 97.5;
-                }
+
+        $capacity = intval(preg_replace('/\D/', '', $ax['psu_model'])) ?: 1600;
+        $pout     = floatval($ax['pout_total_w']);
+        $fan_rpm  = floatval($inp['fan_rpm']);
+
+        if ($inp['fan_mode'] === 'fixed') {
+                $fan_percentage = intval($inp['fan_pct']);
+        } else {
+                $fan_percentage = $fan_rpm > 0 ? round($fan_rpm / 2000 * 100) : 0;
         }
-        
-        // Calculate load percentages
-        $load_12v = round(($ax_data['12v_watts'] / $capacity) * 100, 1);
-        $load_5v = round(($ax_data['5v_watts'] / $capacity) * 100, 1);
-        $load_3v = round(($ax_data['3v_watts'] / $capacity) * 100, 1);
-        $total_load = round(($total_watts / $capacity) * 100, 1);
-        
-        // Calculate fan percentage (assuming max RPM of 2000 for AX1600i)
-        $max_fan_rpm = 2000;
-        $fan_percentage = round(($ax_data['fan_rpm'] / $max_fan_rpm) * 100);
-        
-        $json = array(
-                'temp1' => round($ax_data['temp1'], 2),
-                'temp2' => round($ax_data['temp2'], 2),
-                'fan_rpm' => round($ax_data['fan_rpm']),
+
+        $json = [
+                'temp1'          => round(floatval($inp['temp_c']), 2),
+                'temp2'          => round(floatval($inp['temp_c']), 2),
+                'fan_rpm'        => round($fan_rpm),
                 'fan_percentage' => $fan_percentage,
-                'capacity' => $capacity,
-                '12v_watts' => round($ax_data['12v_watts'], 1),
-                '5v_watts' => round($ax_data['5v_watts'], 1),
-                '3v_watts' => round($ax_data['3v_watts'], 1),
-                '12v_current' => round($ax_data['12v_current'], 2),
-                '5v_current' => round($ax_data['5v_current'], 2),
-                '3v_current' => round($ax_data['3v_current'], 2),
-                'watts' => round($total_watts, 1),
-                'load' => $total_load,
-                '12v_load' => $load_12v,
-                '5v_load' => $load_5v,
-                '3v_load' => $load_3v,
-                'vendor' => 'CORSAIR',
-                'product' => $ax_data['product'],
-        );
-        
-        // Add optional fields if present
-        if (isset($ax_data['firmware'])) {
-                $json['firmware'] = $ax_data['firmware'];
-        }
-        if (isset($ax_data['version'])) {
-                $json['version'] = $ax_data['version'];
-        }
-        
-        // Continue with rest of JSON
-        $json = array_merge($json, array(
-                'uptime' => 'Not Supported',
-                'uptime_raw' => 'Not Supported',
-                'poweredon' => 'Not Supported',
-                'poweredon_raw' => 'Not Supported',
-                'input_voltage' => round($ax_data['input_voltage']),
-                'input_current' => round($ax_data['input_current'], 2),
-                'input_power' => round($ax_data['input_power']),
-                'efficiency' => round($efficiency, 1)
-        ));
-        
+                'capacity'       => $capacity,
+                '12v_watts'      => round(floatval($rails['+12V']['pout_w']), 1),
+                '5v_watts'       => round(floatval($rails['+5V']['pout_w']), 1),
+                '3v_watts'       => round(floatval($rails['+3.3V']['pout_w']), 1),
+                '12v_current'    => round(floatval($rails['+12V']['iout_a']), 2),
+                '5v_current'     => round(floatval($rails['+5V']['iout_a']), 2),
+                '3v_current'     => round(floatval($rails['+3.3V']['iout_a']), 2),
+                'watts'          => round($pout, 1),
+                'load'           => round($pout / $capacity * 100, 1),
+                '12v_load'       => round(floatval($rails['+12V']['pout_w']) / $capacity * 100, 1),
+                '5v_load'        => round(floatval($rails['+5V']['pout_w'])  / $capacity * 100, 1),
+                '3v_load'        => round(floatval($rails['+3.3V']['pout_w'])/ $capacity * 100, 1),
+                'vendor'         => 'CORSAIR',
+                'product'        => $ax['psu_model'],
+                'uptime'         => 'Not Supported',
+                'uptime_raw'     => 'Not Supported',
+                'poweredon'      => 'Not Supported',
+                'poweredon_raw'  => 'Not Supported',
+                'input_voltage'  => round(floatval($inp['vin_v'])),
+                'input_current'  => round(floatval($inp['iin_a']), 2),
+                'input_power'    => round(floatval($inp['pin_w'])),
+                'efficiency'     => round(floatval($ax['efficiency_pct']), 1),
+                'channels_12v'   => $ax['channels_12v'],
+        ];
+
         header('Content-Type: application/json');
         echo json_encode($json);
         exit;
+} else {
+        die("There is an error with your configuration!");
 }
 
 $re     = '/(?<key>[^:]+):\s+\'*(?<value>[^\n\']+)\'*\s*/';

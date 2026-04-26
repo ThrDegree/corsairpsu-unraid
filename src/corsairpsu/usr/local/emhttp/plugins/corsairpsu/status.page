@@ -12,13 +12,13 @@ Patch by bngoold for the Unraid community
     if ($corsairpsu_cfg["TYPE"] == "cpsumoncli" || $corsairpsu_cfg["TYPE"] == "ax1600i") {
         echo '.corsair-uptime-rm { display:none; }';
         echo '.corsair-temp-rm { display:none; }';
-    } else {    
+    } else {
         echo '.corsair-uptime-rm td { padding-bottom: 20px !important;}';
         echo '.corsair-temp-ax { display:none; }';
     }
 ?>
-    #dash_corsairpsu_settings i, #dash_corsairpsu_toggle {margin-top:0px;}  
-    .dash_corsairpsu_header {padding-top: 20px} 
+    #dash_corsairpsu_settings i, #dash_corsairpsu_toggle {margin-top:0px;}
+    .dash_corsairpsu_header {padding-top: 20px}
     .dash_corsairpsu_section {
         line-height:1.4em !important;
         margin-left:-4px !important;
@@ -74,7 +74,6 @@ Patch by bngoold for the Unraid community
             <td>Fan: <span class="corsair-fan_display"></span></td>
             <td></td>
         </tr>
-
         <tr class="corsair-efficiency-ax">
             <td></td>
             <td>Efficiency / Supply</td>
@@ -82,6 +81,7 @@ Patch by bngoold for the Unraid community
             <td><span class="corsair-input_voltage"></span>V (<span class="corsair-input_power"></span>W<span class="corsair-input_amps"></span>)</td>
             <td></td>
         </tr>
+        <tr id="corsair-channels-anchor"></tr>
     </tbody>
 </table>
 <script>
@@ -91,7 +91,7 @@ const corsairpsu_status = () => {
          $.each(data, function (key, data) {
              $(".corsair-" + key).html(data);
          });
-         
+
          // Format amperage displays with comma separator
          if (data['12v_current']) {
              $(".corsair-12v_amps").html(", " + data['12v_current'] + "A");
@@ -105,12 +105,34 @@ const corsairpsu_status = () => {
          if (data['input_current']) {
              $(".corsair-input_amps").html(", " + data['input_current'] + "A");
          }
-         
+
          // Display fan with percentage and consistent formatting
          if (data['fan_rpm'] == 0) {
              $(".corsair-fan_display").html("0% (Passive)");
          } else {
              $(".corsair-fan_display").html(data['fan_percentage'] + "% (" + data['fan_rpm'] + " RPM)");
+         }
+
+         // Per-connector 12V channel rows (ax1600i only)
+         $('.corsair-channel-row').remove();
+         if (data['channels_12v']) {
+             const active = data['channels_12v'].filter(c => c.iout_a > 0.01);
+             if (active.length) {
+                 let html = '<tr class="corsair-channel-row"><td></td><td colspan="3"><hr style="margin:4px 0;border-color:#555"></td><td></td></tr>';
+                 html += '<tr class="corsair-channel-row"><td></td>' +
+                         '<td class="dash_corsairpsu_table_header">12V Connector</td>' +
+                         '<td class="dash_corsairpsu_table_header">Current</td>' +
+                         '<td class="dash_corsairpsu_table_header">Power</td>' +
+                         '<td></td></tr>';
+                 active.forEach(c => {
+                     html += '<tr class="corsair-channel-row"><td></td>' +
+                             '<td>' + c.label + '</td>' +
+                             '<td>' + c.iout_a.toFixed(2) + 'A</td>' +
+                             '<td>' + c.pout_w.toFixed(1) + 'W</td>' +
+                             '<td></td></tr>';
+                 });
+                 $('#corsair-channels-anchor').after(html);
+             }
          }
         }
     });
@@ -123,10 +145,10 @@ if (<?=$corsairpsu_cfg['UIREFRESH'];?>) {
 $(function() {
   // append data from the table into the correct one
   $("#db-box1").append($(".dash_corsairpsu").html());
-  
+
   // reload toggle to get the correct state
   toggleView('dash_corsairpsu_toggle',true);
-  
+
   // reload sorting to get the stored data (cookie)
   sortTable($('#db-box1'),$.cookie('db-box1'));
 });
