@@ -7,13 +7,21 @@ Commands use Manchester-nibble encoding over USB bulk transfers (EP 0x02 out, 0x
 The device is NOT a standard CP210x UART bridge — do not use pyserial.
 
 Usage:
-    python3 ax1600i_monitor.py
-    python3 ax1600i_monitor.py --json
+    python3 ax1600i_monitor.py                        # human-readable one-shot
+    python3 ax1600i_monitor.py --json                 # JSON one-shot (for testing)
+    python3 ax1600i_monitor.py --daemon               # persistent daemon (normal use)
+    python3 ax1600i_monitor.py --daemon --interval 5  # poll every 5 seconds
+
+Daemon mode holds the USB connection open and writes JSON to DAEMON_OUTPUT on
+each poll interval. status.php reads that file instead of spawning this script,
+which eliminates per-refresh USB resets and syslog noise.
 """
 
+import os
 import sys
 import json
 import time
+import signal
 import usb.core
 import usb.util
 
@@ -65,6 +73,10 @@ REG_12V_IOUT  = 0xe8
 REG_12V_POUT  = 0xe9
 REG_12V_OCP   = 0xea
 REG_PSU_NAME  = 0x9a
+
+DAEMON_OUTPUT   = '/tmp/corsairpsu_ax1600i.json'
+DAEMON_PID_FILE = '/tmp/corsairpsu_ax1600i.pid'
+DAEMON_INTERVAL = 2  # seconds between polls
 
 
 def encode_wire(data: bytes) -> bytes:
@@ -239,7 +251,6 @@ class AX1600i:
             voltage = self._read_float(REG_VOUT)
             current = self._read_float(REG_12V_IOUT)
             power   = self._read_float(REG_12V_POUT)
-            ocp_raw = self._read_float(REG_12V_OCP)
 
             if i <= self.pcie_channels:
                 label = f'PCIe-{i}'
@@ -301,9 +312,100 @@ def print_summary(data: dict):
     print()
 
 
+def run_daemon(interval: int = DAEMON_INTERVAL, output_file: str = DAEMON_OUTPUT):
+    """Hold the USB connection open and write JSON on each poll interval."""
+
+    # Prevent duplicate instances
+    if os.path.exists(DAEMON_PID_FILE):
+        try:
+            existing_pid = int(open(DAEMON_PID_FILE).read().strip())
+            os.kill(existing_pid, 0)
+            print(f"Daemon already running (PID {existing_pid})", file=sys.stderr)
+            sys.exit(1)
+        except (ProcessLookupError, ValueError):
+            pass  # stale PID file
+
+    with open(DAEMON_PID_FILE, 'w') as f:
+        f.write(str(os.getpid()))
+
+    def cleanup(signum=None, frame=None):
+        try:
+            os.unlink(DAEMON_PID_FILE)
+        except OSError:
+            pass
+        try:
+            os.unlink(output_file)
+        except OSError:
+            pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, cleanup)
+    signal.signal(signal.SIGINT, cleanup)
+
+    print(f"AX1600i daemon starting (PID {os.getpid()}, interval {interval}s)", file=sys.stderr)
+
+    psu = None
+    while True:
+        try:
+            if psu is None:
+                psu = AX1600i()
+                psu.setup()
+                print(f"Connected to {psu.psu_name}", file=sys.stderr)
+
+            data = psu.read_all()
+            data['timestamp'] = time.time()
+
+            tmp = output_file + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(data, f)
+            os.replace(tmp, output_file)  # atomic write
+
+        except Exception as e:
+            print(f"AX1600i daemon error: {e}", file=sys.stderr)
+            try:
+                with open(output_file, 'w') as f:
+                    json.dump({'error': str(e), 'timestamp': time.time()}, f)
+            except OSError:
+                pass
+
+            if psu is not None:
+                try:
+                    psu.close()
+                except Exception:
+                    pass
+                psu = None
+
+            time.sleep(10)  # back off before reconnect attempt
+            continue
+
+        time.sleep(interval)
+
+
 def main():
     args = sys.argv[1:]
-    as_json = '--json' in args
+    as_json     = '--json'   in args
+    daemon_mode = '--daemon' in args
+
+    interval    = DAEMON_INTERVAL
+    output_file = DAEMON_OUTPUT
+
+    if '--interval' in args:
+        idx = args.index('--interval')
+        try:
+            interval = int(args[idx + 1])
+        except (IndexError, ValueError):
+            pass
+
+    if '--output' in args:
+        idx = args.index('--output')
+        try:
+            output_file = args[idx + 1]
+        except IndexError:
+            pass
+
+    if daemon_mode:
+        run_daemon(interval=interval, output_file=output_file)
+        return
 
     print("Connecting to AX1600i...", file=sys.stderr)
     psu = AX1600i()

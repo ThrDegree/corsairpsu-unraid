@@ -23,19 +23,27 @@ if ($settings["TYPE"] == "corsairmi") {
         $stdout = shell_exec('/usr/local/bin/cpsumoncli ' . $settings["TTY"] . ' 2>&1');
         //$stdout = file_get_contents("https://raw.githubusercontent.com/CyanLabs/corsairpsu-unraid/master/axoutput-example.txt"); //- Debug Testing
 } elseif ($settings["TYPE"] == "ax1600i") {
-        $script = '/mnt/user/appdata/corsairPSU/ax1600i_monitor.py';
-        $raw = shell_exec('python3 ' . escapeshellarg($script) . ' --json 2>/dev/null');
+        $json_file = '/tmp/corsairpsu_ax1600i.json';
 
-        if (!$raw || trim($raw) === '') {
+        if (!file_exists($json_file)) {
                 header('Content-Type: application/json');
-                echo json_encode(['error' => 'no output from ax1600i_monitor.py', 'message' => 'Script may be missing, pyusb not installed, or PSU not connected']);
+                echo json_encode(['error' => 'AX1600i daemon not running', 'message' => 'Add to Python plugin autoexec.sh: python3 /mnt/user/appdata/corsairPSU/ax1600i_monitor.py --daemon &']);
                 exit;
         }
 
-        $ax = json_decode($raw, true);
-        if (!$ax) {
+        $age = time() - filemtime($json_file);
+        if ($age > 30) {
                 header('Content-Type: application/json');
-                echo json_encode(['error' => 'failed to parse ax1600i_monitor.py output', 'raw' => substr($raw, 0, 500)]);
+                echo json_encode(['error' => 'AX1600i daemon data stale', 'message' => "Last update was {$age}s ago — daemon may have crashed"]);
+                exit;
+        }
+
+        $raw = file_get_contents($json_file);
+        $ax  = json_decode($raw, true);
+
+        if (!$ax || isset($ax['error'])) {
+                header('Content-Type: application/json');
+                echo json_encode($ax ?: ['error' => 'failed to parse daemon output']);
                 exit;
         }
 

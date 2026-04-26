@@ -21,10 +21,13 @@ https://raw.githubusercontent.com/giganode/corsairpsu-unraid/master/corsairpsu.p
 The AX1600i PSU type requires the **[Python 3 for Unraid](https://forums.unraid.net/topic/88014-plugin-python3/)** plugin and the `pyusb` package.
 
 1. Install the **Python 3** plugin from Community Apps.
-2. Open the plugin's **Auto-execution Script** editor and add:
+2. Place `ax1600i_monitor.py` at `/mnt/user/appdata/corsairPSU/ax1600i_monitor.py`.
+3. Open the Python 3 plugin's **Auto-execution Script** editor and add:
    ```bash
    pip3 install pyusb -q
+   python3 /mnt/user/appdata/corsairPSU/ax1600i_monitor.py --daemon &
    ```
-3. Reboot (or run the above command manually once from a terminal).
-4. Place `ax1600i_monitor.py` at `/mnt/user/appdata/corsairPSU/ax1600i_monitor.py`.
+4. Reboot (or run the above commands manually once from a terminal to start immediately).
 5. Select **AX1600i** as the PSU type in the Corsair PSU plugin settings.
+
+The daemon holds the USB connection open and writes readings to `/tmp/corsairpsu_ax1600i.json` every 2 seconds. The dashboard reads from that file, so no USB reset occurs on each refresh. The daemon restarts automatically after a reboot via the autoexec.sh script.
