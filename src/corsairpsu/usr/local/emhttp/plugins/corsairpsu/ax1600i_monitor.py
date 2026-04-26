@@ -264,7 +264,7 @@ class AX1600i:
             elif i == self.pcie_channels + 1:
                 label = 'ATX'
             else:
-                label = 'Peripheral'
+                label = 'EPS/CPU'
 
             # Fall back to V*I if power register returns 0
             if power == 0.0 and current > 0.0:
