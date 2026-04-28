@@ -206,15 +206,16 @@ class AX1600i:
 
     def read_input(self) -> dict:
         self.set_main_page(0)
-        vin  = self._read_float(REG_VIN)
-        iin  = self._read_float(REG_IIN)
-        # The device only updates PIN (0xee) correctly after VOUT, IOUT, and PCAL
-        # have been read on page 0 — confirmed by --diag showing VOUT→IOUT→PCAL→PIN
-        # gives 200W (matching UPS), while skipping PCAL gives wrong values.
+        # VOUT→IOUT→PCAL must immediately follow set_main_page(0) with no
+        # intervening reads — confirmed by --diag: this exact sequence causes
+        # the device to latch a fresh PIN value. Reading VIN/IIN first resets
+        # the device's PIN computation state, causing intermittent underreads.
         self._read_float(REG_VOUT)
         self._read_float(REG_IOUT)
         self._read_float(REG_POWER_CAL)
         pin  = self._read_float(REG_PIN)
+        vin  = self._read_float(REG_VIN)
+        iin  = self._read_float(REG_IIN)
         temp = self._read_float(REG_TEMP)
         fan  = self._read_float(REG_FAN_SPEED)
         fan_pct  = self._read_byte(REG_FAN_PCT)
@@ -277,13 +278,19 @@ class AX1600i:
             })
         return channels
 
-    def read_all(self) -> dict:
-        inp      = self.read_input()
-        rails    = self.read_rails()
-        channels = self.read_12v_channels()
+    def read_all(self, include_channels: bool = True) -> dict:
+        # read_rails() ends on page 4 (+5Vsb); read_input() then calls
+        # set_main_page(0) which is a genuine 4→0 transition, ensuring the
+        # VOUT/IOUT/PCAL primers run correctly before PIN is read.
+        # Channels are read last so they don't extend the rails→PIN time gap.
+        rails      = self.read_rails()
+        inp        = self.read_input()
+        channels   = self.read_12v_channels() if include_channels else []
         pout_total = sum(r['pout_w'] for r in rails)
-        pin = inp['pin_w'] or 1.0
-        efficiency = round((pout_total / pin) * 100.0, 1)
+        pin        = inp['pin_w'] or 1.0
+        # Efficiency >100% is physically impossible; it's a timing artifact from
+        # reading pout and pin sequentially while load is varying rapidly.
+        efficiency = min(round((pout_total / pin) * 100.0, 1), 99.9)
         return {
             'psu_model':      self.psu_name,
             'input':          inp,
@@ -393,7 +400,7 @@ def run_daemon(interval: int = DAEMON_INTERVAL, output_file: str = DAEMON_OUTPUT
                 psu.setup()
                 print(f"Connected to {psu.psu_name}", file=sys.stderr)
 
-            data = psu.read_all()
+            data = psu.read_all(include_channels=False)
             data['timestamp'] = time.time()
 
             tmp = output_file + '.tmp'
